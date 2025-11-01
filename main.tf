@@ -32,7 +32,7 @@ provider "aws" {
 }
 
 ############################################
-# Variables (populate after PAN launch)
+# Variables (fill after PAN is launched)
 ############################################
 variable "pan_dataplane_ips" {
   description = "PAN dataplane IPs to register in the GWLB target group (trust-side dataplane IPs that terminate GENEVE)."
@@ -109,7 +109,6 @@ resource "aws_subnet" "ins_mgmt_az1" {
   map_public_ip_on_launch = false
   tags = { Name = "ins-mgmt-az1" }
 }
-
 resource "aws_subnet" "ins_mgmt_az2" {
   vpc_id                  = aws_vpc.inspection.id
   cidr_block              = local.cidr.ins_mgmt_az2
@@ -126,7 +125,6 @@ resource "aws_subnet" "ins_untrust_az1" {
   map_public_ip_on_launch = true
   tags = { Name = "ins-untrust-az1" }
 }
-
 resource "aws_subnet" "ins_untrust_az2" {
   vpc_id                  = aws_vpc.inspection.id
   cidr_block              = local.cidr.ins_untrust_az2
@@ -143,7 +141,6 @@ resource "aws_subnet" "ins_trust_az1" {
   map_public_ip_on_launch = false
   tags = { Name = "ins-trust-az1" }
 }
-
 resource "aws_subnet" "ins_trust_az2" {
   vpc_id                  = aws_vpc.inspection.id
   cidr_block              = local.cidr.ins_trust_az2
@@ -160,7 +157,6 @@ resource "aws_subnet" "ins_tgwatt_az1" {
   map_public_ip_on_launch = false
   tags = { Name = "ins-tgwatt-az1" }
 }
-
 resource "aws_subnet" "ins_tgwatt_az2" {
   vpc_id                  = aws_vpc.inspection.id
   cidr_block              = local.cidr.ins_tgwatt_az2
@@ -180,7 +176,6 @@ resource "aws_subnet" "mgmt_az1" {
   map_public_ip_on_launch = false
   tags = { Name = "mgmt-az1" }
 }
-
 resource "aws_subnet" "mgmt_az2" {
   vpc_id                  = aws_vpc.mgmt.id
   cidr_block              = local.cidr.mgmt_az2
@@ -197,7 +192,6 @@ resource "aws_subnet" "app_az1" {
   map_public_ip_on_launch = false
   tags = { Name = "app-az1" }
 }
-
 resource "aws_subnet" "app_az2" {
   vpc_id                  = aws_vpc.app.id
   cidr_block              = local.cidr.app_az2
@@ -444,41 +438,6 @@ resource "aws_route_table_association" "ins_tgwatt_rt_assoc_az2" {
 }
 
 ############################################
-# Mgmt VPC Route Table → TGW (reach Inspection/App)
-############################################
-resource "aws_route_table" "mgmt_rt" {
-  vpc_id = aws_vpc.mgmt.id
-
-  tags = {
-    Name = "rt-mgmt-main"
-  }
-}
-
-resource "aws_route_table_association" "mgmt_a1" {
-  route_table_id = aws_route_table.mgmt_rt.id
-  subnet_id      = aws_subnet.mgmt_az1.id
-}
-
-resource "aws_route_table_association" "mgmt_a2" {
-  route_table_id = aws_route_table.mgmt_rt.id
-  subnet_id      = aws_subnet.mgmt_az2.id
-}
-
-# REQUIRED: Mgmt → Inspection (lets bastion reach PAN mgmt)
-resource "aws_route" "mgmt_to_inspection" {
-  route_table_id         = aws_route_table.mgmt_rt.id
-  destination_cidr_block = aws_vpc.inspection.cidr_block   # 10.10.0.0/16
-  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
-}
-
-# Optional: Mgmt → App
-resource "aws_route" "mgmt_to_app" {
-  route_table_id         = aws_route_table.mgmt_rt.id
-  destination_cidr_block = aws_vpc.app.cidr_block          # 10.30.0.0/16
-  transit_gateway_id     = aws_ec2_transit_gateway.tgw.id
-}
-
-############################################
 # SSM Interface Endpoints (with dedicated SGs)
 ############################################
 resource "aws_security_group" "vpce_mgmt_sg" {
@@ -713,7 +672,6 @@ resource "aws_lb_listener" "nlb_listener_80" {
   load_balancer_arn = aws_lb.nlb_edge.arn
   port              = 80
   protocol          = "TCP"
-
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.nlb_tg_tcp80.arn
@@ -724,7 +682,6 @@ resource "aws_lb_listener" "nlb_listener_443" {
   load_balancer_arn = aws_lb.nlb_edge.arn
   port              = 443
   protocol          = "TCP"
-
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.nlb_tg_tcp443.arn
@@ -735,7 +692,6 @@ resource "aws_lb_listener" "nlb_listener_22" {
   load_balancer_arn = aws_lb.nlb_edge.arn
   port              = 22
   protocol          = "TCP"
-
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.nlb_tg_tcp22.arn
