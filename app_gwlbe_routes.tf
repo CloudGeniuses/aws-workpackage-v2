@@ -1,129 +1,185 @@
 ############################################
-# app_gwlbe_routes.tf (per-AZ GWLBE endpoints)
+# app_gwlbe_routes.tf  (tag-based lookups, per-AZ endpoints)
 ############################################
 
-locals {
-  # VPCs
-  vpc_app_id  = "vpc-0d9793d0c3a15b56c"     # App VPC (10.30.0.0/16)
-  vpc_mgmt_id = "vpc-05ba9445813b0d56a"     # Mgmt VPC (10.20.0.0/16)
+# Show which AWS account Terraform is actually using
+data "aws_caller_identity" "current" {}
 
+output "aws_account_in_use" {
+  value       = data.aws_caller_identity.current.account_id
+  description = "AWS account ID used by this workspace/run"
+}
+
+############################################################
+# DATA LOOKUPS — avoid brittle hard-coded IDs
+############################################################
+
+# VPCs by Name tag
+data "aws_vpc" "app" {
+  filter {
+    name   = "tag:Name"
+    values = ["vpc-app"]
+  }
+}
+
+data "aws_vpc" "mgmt" {
+  filter {
+    name   = "tag:Name"
+    values = ["vpc-mgmt"]
+  }
+}
+
+# App subnets by Name tag in vpc-app
+data "aws_subnet" "app_az1" {
+  filter {
+    name   = "tag:Name"
+    values = ["app-az1"]
+  }
+  vpc_id = data.aws_vpc.app.id
+}
+
+data "aws_subnet" "app_az2" {
+  filter {
+    name   = "tag:Name"
+    values = ["app-az2"]
+  }
+  vpc_id = data.aws_vpc.app.id
+}
+
+# Mgmt subnets by Name tag in vpc-mgmt
+data "aws_subnet" "mgmt_az1" {
+  filter {
+    name   = "tag:Name"
+    values = ["mgmt-az1"]
+  }
+  vpc_id = data.aws_vpc.mgmt.id
+}
+
+data "aws_subnet" "mgmt_az2" {
+  filter {
+    name   = "tag:Name"
+    values = ["mgmt-az2"]
+  }
+  vpc_id = data.aws_vpc.mgmt.id
+}
+
+locals {
   # CIDRs
   app_cidr  = "10.30.0.0/16"
   mgmt_cidr = "10.20.0.0/16"
 
-  # App subnets (must be in vpc_app_id)
-  app_subnet_ids = {
-    az1 = "subnet-0713a498610ac9ddd"       # app-az1  (10.30.11.0/24)
-    az2 = "subnet-006ecb6b54880690d"       # app-az2  (10.30.12.0/24)
-  }
-
-  # Mgmt subnets (must be in vpc_mgmt_id)
-  mgmt_subnet_ids = {
-    az1 = "subnet-0df91eca84831dcf7"       # mgmt-az1 (10.20.11.0/24)
-    az2 = "subnet-000d1270d3c8e2c7"        # mgmt-az2 (10.20.12.0/24)  <-- verify exists in this account/region
-  }
-
-  # Your GWLB Endpoint Service (from inspection VPC)
+  # Your GWLB endpoint service (from inspection VPC)
   gwlb_service_name = "com.amazonaws.vpce.us-west-2.vpce-svc-0a4f6952bc2855d2f"
+
+  # Map per-AZ subnets (resolved dynamically)
+  app_subnets = {
+    az1 = data.aws_subnet.app_az1.id
+    az2 = data.aws_subnet.app_az2.id
+  }
+
+  mgmt_subnets = {
+    az1 = data.aws_subnet.mgmt_az1.id
+    az2 = data.aws_subnet.mgmt_az2.id
+  }
 }
 
-############################################
+############################################################
 # APP VPC — one GWLBE per AZ (zonal), RTs and routes
-############################################
+############################################################
 
-# Per-AZ GWLBE in APP VPC (each endpoint can have only ONE subnet)
+# Per-AZ GWLBE endpoints in App VPC (exactly one subnet each)
 resource "aws_vpc_endpoint" "app_gwlbe" {
-  for_each          = local.app_subnet_ids
-  vpc_id            = local.vpc_app_id
+  for_each          = local.app_subnets
+  vpc_id            = data.aws_vpc.app.id
   service_name      = local.gwlb_service_name
   vpc_endpoint_type = "GatewayLoadBalancer"
-  subnet_ids        = [each.value]   # exactly one subnet per endpoint
+  subnet_ids        = [each.value]     # ONE subnet per endpoint
 
   tags = { Name = "gwlbe-app-${each.key}" }
 }
 
-# Per-AZ route table in APP VPC
+# Per-AZ RTs in App VPC
 resource "aws_route_table" "app" {
-  for_each = local.app_subnet_ids
-  vpc_id   = local.vpc_app_id
+  for_each = local.app_subnets
+  vpc_id   = data.aws_vpc.app.id
   tags     = { Name = "rt-app-${each.key}" }
 }
 
-# N-S: App → Internet via PAN (through APP GWLBE in same AZ)
+# App -> Internet via PAN (through AZ-local GWLBE)
 resource "aws_route" "app_default_via_gwlbe" {
-  for_each               = local.app_subnet_ids
+  for_each               = local.app_subnets
   route_table_id         = aws_route_table.app[each.key].id
   destination_cidr_block = "0.0.0.0/0"
   vpc_endpoint_id        = aws_vpc_endpoint.app_gwlbe[each.key].id
   lifecycle { create_before_destroy = true }
 }
 
-# E-W: App → Mgmt via PAN (through APP GWLBE in same AZ)
+# App -> Mgmt via PAN (through AZ-local GWLBE)
 resource "aws_route" "app_to_mgmt_via_gwlbe" {
-  for_each               = local.app_subnet_ids
+  for_each               = local.app_subnets
   route_table_id         = aws_route_table.app[each.key].id
   destination_cidr_block = local.mgmt_cidr
   vpc_endpoint_id        = aws_vpc_endpoint.app_gwlbe[each.key].id
   lifecycle { create_before_destroy = true }
 }
 
-# Associate each App subnet with its AZ-local route table
+# Associate App subnets to their RTs
 resource "aws_route_table_association" "app" {
-  for_each      = local.app_subnet_ids
+  for_each      = local.app_subnets
   subnet_id     = each.value
   route_table_id = aws_route_table.app[each.key].id
 }
 
-############################################
+############################################################
 # MGMT VPC — one GWLBE per AZ (zonal), RTs and routes
-############################################
+############################################################
 
-# Per-AZ GWLBE in MGMT VPC
+# Per-AZ GWLBE endpoints in Mgmt VPC
 resource "aws_vpc_endpoint" "mgmt_gwlbe" {
-  for_each          = local.mgmt_subnet_ids
-  vpc_id            = local.vpc_mgmt_id
+  for_each          = local.mgmt_subnets
+  vpc_id            = data.aws_vpc.mgmt.id
   service_name      = local.gwlb_service_name
   vpc_endpoint_type = "GatewayLoadBalancer"
-  subnet_ids        = [each.value]   # exactly one subnet per endpoint
+  subnet_ids        = [each.value]     # ONE subnet per endpoint
 
   tags = { Name = "gwlbe-mgmt-${each.key}" }
 }
 
-# Per-AZ route table in MGMT VPC
+# Per-AZ RTs in Mgmt VPC
 resource "aws_route_table" "mgmt" {
-  for_each = local.mgmt_subnet_ids
-  vpc_id   = local.vpc_mgmt_id
+  for_each = local.mgmt_subnets
+  vpc_id   = data.aws_vpc.mgmt.id
   tags     = { Name = "rt-mgmt-${each.key}" }
 }
 
-# E-W: Mgmt → App via PAN (through MGMT GWLBE in same AZ)
+# Mgmt -> App via PAN (through AZ-local GWLBE)
 resource "aws_route" "mgmt_to_app_via_gwlbe" {
-  for_each               = local.mgmt_subnet_ids
+  for_each               = local.mgmt_subnets
   route_table_id         = aws_route_table.mgmt[each.key].id
   destination_cidr_block = local.app_cidr
   vpc_endpoint_id        = aws_vpc_endpoint.mgmt_gwlbe[each.key].id
   lifecycle { create_before_destroy = true }
 }
 
-# N-S: Mgmt → Internet via PAN (optional; enabled)
+# Mgmt -> Internet via PAN (enabled)
 resource "aws_route" "mgmt_default_via_gwlbe" {
-  for_each               = local.mgmt_subnet_ids
+  for_each               = local.mgmt_subnets
   route_table_id         = aws_route_table.mgmt[each.key].id
   destination_cidr_block = "0.0.0.0/0"
   vpc_endpoint_id        = aws_vpc_endpoint.mgmt_gwlbe[each.key].id
   lifecycle { create_before_destroy = true }
 }
 
-# Associate each Mgmt subnet with its AZ-local route table
+# Associate Mgmt subnets to their RTs
 resource "aws_route_table_association" "mgmt" {
-  for_each      = local.mgmt_subnet_ids
+  for_each      = local.mgmt_subnets
   subnet_id     = each.value
   route_table_id = aws_route_table.mgmt[each.key].id
 }
 
-############################################
-# OUTPUTS
-############################################
+############################################################
+# Outputs
+############################################################
 
 output "app_gwlbe_ids" {
   value       = { for k, v in aws_vpc_endpoint.app_gwlbe : k => v.id }
