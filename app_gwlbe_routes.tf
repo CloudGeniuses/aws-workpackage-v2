@@ -1,8 +1,5 @@
 ############################################
-# app_gwlbe_routes.tf (final – no provider blocks)
-# App & Mgmt VPC per-AZ routing via GWLB/GWLBE -> PAN
-# - Creates a GWLBE in EACH VPC (App, Mgmt) using your endpoint service
-# - Per-AZ route tables and routes target the in-VPC GWLBE
+# app_gwlbe_routes.tf (per-AZ GWLBE endpoints)
 ############################################
 
 locals {
@@ -23,7 +20,7 @@ locals {
   # Mgmt subnets (must be in vpc_mgmt_id)
   mgmt_subnet_ids = {
     az1 = "subnet-0df91eca84831dcf7"       # mgmt-az1 (10.20.11.0/24)
-    az2 = "subnet-000d1270d3c8e2c7"        # mgmt-az2 (10.20.12.0/24)
+    az2 = "subnet-000d1270d3c8e2c7"        # mgmt-az2 (10.20.12.0/24)  <-- verify exists in this account/region
   }
 
   # Your GWLB Endpoint Service (from inspection VPC)
@@ -31,51 +28,46 @@ locals {
 }
 
 ############################################
-# GWLBE in APP VPC (same VPC as app route tables)
+# APP VPC — one GWLBE per AZ (zonal), RTs and routes
 ############################################
 
+# Per-AZ GWLBE in APP VPC (each endpoint can have only ONE subnet)
 resource "aws_vpc_endpoint" "app_gwlbe" {
+  for_each          = local.app_subnet_ids
   vpc_id            = local.vpc_app_id
   service_name      = local.gwlb_service_name
   vpc_endpoint_type = "GatewayLoadBalancer"
+  subnet_ids        = [each.value]   # exactly one subnet per endpoint
 
-  subnet_ids = [
-    local.app_subnet_ids.az1,
-    local.app_subnet_ids.az2,
-  ]
-
-  tags = { Name = "gwlbe-app" }
+  tags = { Name = "gwlbe-app-${each.key}" }
 }
 
-############################################
-# APP VPC — per-AZ Route Tables → local GWLBE
-############################################
-
+# Per-AZ route table in APP VPC
 resource "aws_route_table" "app" {
   for_each = local.app_subnet_ids
   vpc_id   = local.vpc_app_id
   tags     = { Name = "rt-app-${each.key}" }
 }
 
-# N-S: App → Internet via PAN (through APP VPC GWLBE)
+# N-S: App → Internet via PAN (through APP GWLBE in same AZ)
 resource "aws_route" "app_default_via_gwlbe" {
   for_each               = local.app_subnet_ids
   route_table_id         = aws_route_table.app[each.key].id
   destination_cidr_block = "0.0.0.0/0"
-  vpc_endpoint_id        = aws_vpc_endpoint.app_gwlbe.id
+  vpc_endpoint_id        = aws_vpc_endpoint.app_gwlbe[each.key].id
   lifecycle { create_before_destroy = true }
 }
 
-# E-W: App → Mgmt via PAN (through APP VPC GWLBE)
+# E-W: App → Mgmt via PAN (through APP GWLBE in same AZ)
 resource "aws_route" "app_to_mgmt_via_gwlbe" {
   for_each               = local.app_subnet_ids
   route_table_id         = aws_route_table.app[each.key].id
   destination_cidr_block = local.mgmt_cidr
-  vpc_endpoint_id        = aws_vpc_endpoint.app_gwlbe.id
+  vpc_endpoint_id        = aws_vpc_endpoint.app_gwlbe[each.key].id
   lifecycle { create_before_destroy = true }
 }
 
-# Associate each App subnet to its AZ-local route table
+# Associate each App subnet with its AZ-local route table
 resource "aws_route_table_association" "app" {
   for_each      = local.app_subnet_ids
   subnet_id     = each.value
@@ -83,51 +75,46 @@ resource "aws_route_table_association" "app" {
 }
 
 ############################################
-# GWLBE in MGMT VPC (same VPC as mgmt route tables)
+# MGMT VPC — one GWLBE per AZ (zonal), RTs and routes
 ############################################
 
+# Per-AZ GWLBE in MGMT VPC
 resource "aws_vpc_endpoint" "mgmt_gwlbe" {
+  for_each          = local.mgmt_subnet_ids
   vpc_id            = local.vpc_mgmt_id
   service_name      = local.gwlb_service_name
   vpc_endpoint_type = "GatewayLoadBalancer"
+  subnet_ids        = [each.value]   # exactly one subnet per endpoint
 
-  subnet_ids = [
-    local.mgmt_subnet_ids.az1,
-    local.mgmt_subnet_ids.az2,
-  ]
-
-  tags = { Name = "gwlbe-mgmt" }
+  tags = { Name = "gwlbe-mgmt-${each.key}" }
 }
 
-############################################
-# MGMT VPC — per-AZ Route Tables → local GWLBE
-############################################
-
+# Per-AZ route table in MGMT VPC
 resource "aws_route_table" "mgmt" {
   for_each = local.mgmt_subnet_ids
   vpc_id   = local.vpc_mgmt_id
   tags     = { Name = "rt-mgmt-${each.key}" }
 }
 
-# E-W: Mgmt → App via PAN (through MGMT VPC GWLBE)
+# E-W: Mgmt → App via PAN (through MGMT GWLBE in same AZ)
 resource "aws_route" "mgmt_to_app_via_gwlbe" {
   for_each               = local.mgmt_subnet_ids
   route_table_id         = aws_route_table.mgmt[each.key].id
   destination_cidr_block = local.app_cidr
-  vpc_endpoint_id        = aws_vpc_endpoint.mgmt_gwlbe.id
+  vpc_endpoint_id        = aws_vpc_endpoint.mgmt_gwlbe[each.key].id
   lifecycle { create_before_destroy = true }
 }
 
-# N-S: Mgmt → Internet via PAN (enabled)
+# N-S: Mgmt → Internet via PAN (optional; enabled)
 resource "aws_route" "mgmt_default_via_gwlbe" {
   for_each               = local.mgmt_subnet_ids
   route_table_id         = aws_route_table.mgmt[each.key].id
   destination_cidr_block = "0.0.0.0/0"
-  vpc_endpoint_id        = aws_vpc_endpoint.mgmt_gwlbe.id
+  vpc_endpoint_id        = aws_vpc_endpoint.mgmt_gwlbe[each.key].id
   lifecycle { create_before_destroy = true }
 }
 
-# Associate each Mgmt subnet to its AZ-local route table
+# Associate each Mgmt subnet with its AZ-local route table
 resource "aws_route_table_association" "mgmt" {
   for_each      = local.mgmt_subnet_ids
   subnet_id     = each.value
@@ -138,14 +125,14 @@ resource "aws_route_table_association" "mgmt" {
 # OUTPUTS
 ############################################
 
-output "app_gwlbe_id" {
-  value       = aws_vpc_endpoint.app_gwlbe.id
-  description = "App VPC GWLBE endpoint ID"
+output "app_gwlbe_ids" {
+  value       = { for k, v in aws_vpc_endpoint.app_gwlbe : k => v.id }
+  description = "App GWLBE endpoint IDs per AZ"
 }
 
-output "mgmt_gwlbe_id" {
-  value       = aws_vpc_endpoint.mgmt_gwlbe.id
-  description = "Mgmt VPC GWLBE endpoint ID"
+output "mgmt_gwlbe_ids" {
+  value       = { for k, v in aws_vpc_endpoint.mgmt_gwlbe : k => v.id }
+  description = "Mgmt GWLBE endpoint IDs per AZ"
 }
 
 output "app_route_table_ids" {
