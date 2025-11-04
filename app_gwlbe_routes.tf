@@ -68,6 +68,9 @@ locals {
   app_cidr  = "10.30.0.0/16"
   mgmt_cidr = "10.20.0.0/16"
 
+  # 🔒 FW management subnet (lives in the inspection VPC; keep mgmt access uninspected)
+  fw_mgmt_cidr = "10.10.1.0/24"
+
   # Your GWLB endpoint service (from inspection VPC)
   gwlb_service_name = "com.amazonaws.vpce.us-west-2.vpce-svc-0a4f6952bc2855d2f"
 
@@ -93,16 +96,21 @@ resource "aws_vpc_endpoint" "app_gwlbe" {
   vpc_id            = data.aws_vpc.app.id
   service_name      = local.gwlb_service_name
   vpc_endpoint_type = "GatewayLoadBalancer"
-  subnet_ids        = [each.value]     # ONE subnet per endpoint
+  subnet_ids        = [each.value]
 
-  tags = { Name = "gwlbe-app-${each.key}" }
+  tags = {
+    Name = "gwlbe-app-${each.key}"
+  }
 }
 
 # Per-AZ RTs in App VPC
 resource "aws_route_table" "app" {
   for_each = local.app_subnets
   vpc_id   = data.aws_vpc.app.id
-  tags     = { Name = "rt-app-${each.key}" }
+
+  tags = {
+    Name = "rt-app-${each.key}"
+  }
 }
 
 # App -> Internet via PAN (through AZ-local GWLBE)
@@ -111,7 +119,10 @@ resource "aws_route" "app_default_via_gwlbe" {
   route_table_id         = aws_route_table.app[each.key].id
   destination_cidr_block = "0.0.0.0/0"
   vpc_endpoint_id        = aws_vpc_endpoint.app_gwlbe[each.key].id
-  lifecycle { create_before_destroy = true }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # App -> Mgmt via PAN (through AZ-local GWLBE)
@@ -120,13 +131,16 @@ resource "aws_route" "app_to_mgmt_via_gwlbe" {
   route_table_id         = aws_route_table.app[each.key].id
   destination_cidr_block = local.mgmt_cidr
   vpc_endpoint_id        = aws_vpc_endpoint.app_gwlbe[each.key].id
-  lifecycle { create_before_destroy = true }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Associate App subnets to their RTs
 resource "aws_route_table_association" "app" {
-  for_each      = local.app_subnets
-  subnet_id     = each.value
+  for_each       = local.app_subnets
+  subnet_id      = each.value
   route_table_id = aws_route_table.app[each.key].id
 }
 
@@ -140,16 +154,33 @@ resource "aws_vpc_endpoint" "mgmt_gwlbe" {
   vpc_id            = data.aws_vpc.mgmt.id
   service_name      = local.gwlb_service_name
   vpc_endpoint_type = "GatewayLoadBalancer"
-  subnet_ids        = [each.value]     # ONE subnet per endpoint
+  subnet_ids        = [each.value]
 
-  tags = { Name = "gwlbe-mgmt-${each.key}" }
+  tags = {
+    Name = "gwlbe-mgmt-${each.key}"
+  }
 }
 
 # Per-AZ RTs in Mgmt VPC
 resource "aws_route_table" "mgmt" {
   for_each = local.mgmt_subnets
   vpc_id   = data.aws_vpc.mgmt.id
-  tags     = { Name = "rt-mgmt-${each.key}" }
+
+  tags = {
+    Name = "rt-mgmt-${each.key}"
+  }
+}
+
+# 🚫 EXEMPT: Mgmt -> Firewall mgmt subnet (keep mgmt uninspected for SSM/SSH/UI)
+resource "aws_route" "mgmt_exempt_fw_mgmt_subnet" {
+  for_each               = local.mgmt_subnets
+  route_table_id         = aws_route_table.mgmt[each.key].id
+  destination_cidr_block = local.fw_mgmt_cidr
+  gateway_id             = "local"  # keep inside VPC route domain (no inspection)
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Mgmt -> App via PAN (through AZ-local GWLBE)
@@ -158,7 +189,10 @@ resource "aws_route" "mgmt_to_app_via_gwlbe" {
   route_table_id         = aws_route_table.mgmt[each.key].id
   destination_cidr_block = local.app_cidr
   vpc_endpoint_id        = aws_vpc_endpoint.mgmt_gwlbe[each.key].id
-  lifecycle { create_before_destroy = true }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Mgmt -> Internet via PAN (enabled)
@@ -167,13 +201,16 @@ resource "aws_route" "mgmt_default_via_gwlbe" {
   route_table_id         = aws_route_table.mgmt[each.key].id
   destination_cidr_block = "0.0.0.0/0"
   vpc_endpoint_id        = aws_vpc_endpoint.mgmt_gwlbe[each.key].id
-  lifecycle { create_before_destroy = true }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Associate Mgmt subnets to their RTs
 resource "aws_route_table_association" "mgmt" {
-  for_each      = local.mgmt_subnets
-  subnet_id     = each.value
+  for_each       = local.mgmt_subnets
+  subnet_id      = each.value
   route_table_id = aws_route_table.mgmt[each.key].id
 }
 
