@@ -68,10 +68,9 @@ locals {
   app_cidr  = "10.30.0.0/16"
   mgmt_cidr = "10.20.0.0/16"
 
-  # 🔒 FW management subnet (lives in the inspection VPC; keep mgmt access uninspected)
-  fw_mgmt_cidr = "10.10.1.0/24"
+  # (Note) FW mgmt lives elsewhere; don't try to add a "local" route to it.
 
-  # Your GWLB endpoint service (from inspection VPC)
+  # GWLB endpoint service (from inspection VPC)
   gwlb_service_name = "com.amazonaws.vpce.us-west-2.vpce-svc-0a4f6952bc2855d2f"
 
   # Map per-AZ subnets (resolved dynamically)
@@ -168,18 +167,6 @@ resource "aws_route_table" "mgmt" {
 
   tags = {
     Name = "rt-mgmt-${each.key}"
-  }
-}
-
-# 🚫 EXEMPT: Mgmt -> Firewall mgmt subnet (keep mgmt uninspected for SSM/SSH/UI)
-resource "aws_route" "mgmt_exempt_fw_mgmt_subnet" {
-  for_each               = local.mgmt_subnets
-  route_table_id         = aws_route_table.mgmt[each.key].id
-  destination_cidr_block = local.fw_mgmt_cidr
-  gateway_id             = "local"  # keep inside VPC route domain (no inspection)
-
-  lifecycle {
-    create_before_destroy = true
   }
 }
 
